@@ -1,0 +1,158 @@
+"""Azure relay server.
+
+Mobile phones connect to this server on Azure Container Instances.
+The local simulation (server.py) connects outbound to /source.
+All vehicle logic stays on the local machine — this server is a pure
+message router with no knowledge of vehicle data.
+
+Environment variables:
+    RELAY_SECRET   Shared secret that local server must supply (default: demo-secret-change-me)
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import uuid
+from pathlib import Path
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+
+log = logging.getLogger("relay")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+SECRET = os.environ.get("RELAY_SECRET", "demo-secret-change-me")
+MOBILE_HTML_PATH = Path(__file__).parent / "mobile.html"
+_VALID_VTYPES = {"2wheeler", "car", "bus", "goods_carrier", "person"}
+
+app = FastAPI(title="Mobile Relay")
+
+# ── Global state ─────────────────────────────────────────────────────────────
+# Only one source (local simulation) is expected at a time.
+_source_ws: WebSocket | None = None
+# client_id → WebSocket for each connected phone.
+_mobile_clients: dict[str, WebSocket] = {}
+
+
+async def _to_source(msg: dict) -> None:
+    """Forward a message to the local simulation. Silently drops if not connected."""
+    if _source_ws is not None:
+        try:
+            await _source_ws.send_json(msg)
+        except Exception:
+            pass
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "source_connected": _source_ws is not None,
+        "mobile_clients": len(_mobile_clients),
+    }
+
+
+# ── Serve mobile.html ─────────────────────────────────────────────────────────
+@app.get("/mobile/{vehicle_type}")
+async def serve_mobile(vehicle_type: str):
+    if vehicle_type not in _VALID_VTYPES:
+        return HTMLResponse("Not found", status_code=404)
+    html = MOBILE_HTML_PATH.read_text(encoding="utf-8")
+    html = html.replace("__VEHICLE_TYPE__", vehicle_type)
+    return HTMLResponse(html)
+
+
+# ── Source WebSocket (/source?secret=...) ─────────────────────────────────────
+@app.websocket("/source")
+async def source_endpoint(ws: WebSocket, secret: str = ""):
+    global _source_ws
+    if secret != SECRET:
+        await ws.close(code=4001)
+        log.warning("Source connection rejected: wrong secret")
+        return
+
+    await ws.accept()
+    _source_ws = ws
+    log.info("Local simulation connected (%d mobile clients already waiting)",
+             len(_mobile_clients))
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+
+            # msg: {"to": "<client_id>" | "*", "data": {...}}
+            target = msg.get("to")
+            data_str = json.dumps(msg.get("data", {}), default=str)
+
+            if target == "*":
+                dead = []
+                for cid, cws in list(_mobile_clients.items()):
+                    try:
+                        await cws.send_text(data_str)
+                    except Exception:
+                        dead.append(cid)
+                for cid in dead:
+                    _mobile_clients.pop(cid, None)
+
+            elif target and target in _mobile_clients:
+                try:
+                    await _mobile_clients[target].send_text(data_str)
+                except Exception:
+                    _mobile_clients.pop(target, None)
+
+    except (WebSocketDisconnect, Exception) as e:
+        log.info("Local simulation disconnected: %s", e)
+    finally:
+        _source_ws = None
+
+
+# ── Mobile WebSocket (/ws/mobile/{type}?color=...) ────────────────────────────
+@app.websocket("/ws/mobile/{vehicle_type}")
+async def mobile_endpoint(ws: WebSocket, vehicle_type: str, color: str = "#e74c3c"):
+    if vehicle_type not in _VALID_VTYPES:
+        await ws.close(code=1008)
+        return
+
+    client_id = str(uuid.uuid4())
+    await ws.accept()
+    _mobile_clients[client_id] = ws
+    log.info("Mobile %s connected type=%s color=%s (%d total)",
+             client_id[:8], vehicle_type, color, len(_mobile_clients))
+
+    # Tell the local simulation a new phone has arrived
+    await _to_source({
+        "event": "new_client",
+        "client_id": client_id,
+        "vtype": vehicle_type,
+        "color": color,
+    })
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            # Forward phone messages (accidents, etc.) to local simulation
+            await _to_source({
+                "event": "client_msg",
+                "client_id": client_id,
+                "data": data,
+            })
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        _mobile_clients.pop(client_id, None)
+        await _to_source({
+            "event": "client_disconnected",
+            "client_id": client_id,
+        })
+        log.info("Mobile %s disconnected (%d remaining)",
+                 client_id[:8], len(_mobile_clients))
