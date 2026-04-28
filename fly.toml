@@ -1,6 +1,6 @@
 # fly.toml — Fly.io deployment for the MapMyIndia mobile relay
 # Generated automatically. Deploy with: flyctl deploy
-app = "mapmy-relay-vw"
+app = "relay"
 primary_region = "fra"   # Frankfurt — closest to Volkswagen DE
 
 [build]
