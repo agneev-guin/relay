@@ -1,0 +1,25 @@
+# fly.toml — Fly.io deployment for the MapMyIndia mobile relay
+# Generated automatically. Deploy with: flyctl deploy
+app = "mapmy-relay-vw"
+primary_region = "fra"   # Frankfurt — closest to Volkswagen DE
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "80"
+
+# auto_stop_machines = true  → machine shuts down when idle (zero cost when not in use)
+# auto_start_machines = true → machine wakes on first incoming request (~2s cold start)
+# min_machines_running = 0   → no always-on machine; completely free when idle
+[http_service]
+  internal_port        = 80
+  force_https          = true
+  auto_stop_machines   = true
+  auto_start_machines  = true
+  min_machines_running = 0
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus     = 1
+  memory   = "256mb"
