@@ -79,7 +79,50 @@
   }
   #status-dot.connected { background: #2ecc71; }
   #status-dot.error     { background: #e74c3c; }
+  /* —— Name badge —— shown above info-bar at the bottom */
+  #name-bar {
+    position: fixed; bottom: 62px; left: 0; right: 0; z-index: 510;
+    background: rgba(10,10,25,0.82); backdrop-filter: blur(10px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    display: none; align-items: center; justify-content: center;
+    gap: 8px; padding: 6px 16px;
+    font-size: 13px;
+  }
+  #name-bar.show { display: flex; }
+  #name-dot { width:10px;height:10px;border-radius:50%;flex-shrink:0; }
+  #name-label { font-weight: 700; color: #fff; font-size: 14px; letter-spacing: 0.3px; }
+  #name-sub   { font-size: 11px; color: #888; text-transform: uppercase; }
 
+  /* —— Person name-confirm sheet —— */
+  #name-sheet {
+    position: fixed; bottom: -260px; left: 0; right: 0; z-index: 900;
+    background: rgba(14,14,30,0.97); backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255,255,255,0.12); border-radius: 20px 20px 0 0;
+    padding: 22px 24px 36px;
+    transition: bottom 0.3s cubic-bezier(0.25,0.8,0.25,1);
+  }
+  #name-sheet.open { bottom: 0; }
+  #name-sheet .ns-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+  #name-sheet .ns-sub   { font-size: 12px; color: #888; margin-bottom: 16px; }
+  #name-input {
+    width: 100%; padding: 11px 14px; border-radius: 10px;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+    color: #fff; font-size: 15px; outline: none; margin-bottom: 14px;
+    -webkit-appearance: none;
+  }
+  #name-input:focus { border-color: rgba(124,131,253,0.7); }
+  #name-sheet .ns-btns { display: flex; gap: 10px; }
+  .btn-name-ok {
+    flex: 1; padding: 13px; border-radius: 12px; border: none; cursor: pointer;
+    font-size: 15px; font-weight: 700; color: #fff;
+    transition: opacity 0.15s;
+  }
+  .btn-name-ok:active { opacity: 0.7; }
+  .btn-name-keep {
+    padding: 13px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05); cursor: pointer;
+    font-size: 14px; font-weight: 600; color: #ccc;
+  }
   /* ── Place accident hint ── */
   #place-hint {
     position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
@@ -153,6 +196,13 @@
   <button class="go-btn" id="go-btn" disabled>Connect &rarr;</button>
 </div>
 
+<!-- Name bar — shown once server sends init with name -->
+<div id="name-bar">
+  <div id="name-dot"></div>
+  <span id="name-label"></span>
+  <span id="name-sub"></span>
+</div>
+
 <!-- Map -->
 <div id="map"></div>
 
@@ -181,6 +231,17 @@
   <div class="sheet-btns">
     <button class="btn-confirm" id="btn-confirm">Confirm</button>
     <button class="btn-cancel"  id="btn-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- Person name-confirm sheet (only used for person type) -->
+<div id="name-sheet">
+  <div class="ns-title">Your vehicle name</div>
+  <div class="ns-sub" id="name-sheet-sub">You have been assigned this name. Keep it or enter your own.</div>
+  <input id="name-input" type="text" maxlength="80" placeholder="Enter your name">
+  <div class="ns-btns">
+    <button class="btn-name-ok" id="btn-name-ok">Use this name</button>
+    <button class="btn-name-keep" id="btn-name-keep">Keep assigned</button>
   </div>
 </div>
 
@@ -252,12 +313,11 @@
     }
 
     // ── Accident markers ──
-    const knownAccidents = {}; // "lat,lon" -> true
+    const knownAccidents = {}; // "lat,lon" -> {marker, zone}
 
     function addAccident(lat, lon, radius_m, acColor) {
-      const key = lat.toFixed(5) + "," + lon.toFixed(5);
+      const key = parseFloat(lat).toFixed(5) + "," + parseFloat(lon).toFixed(5);
       if (knownAccidents[key]) return;
-      knownAccidents[key] = true;
       const c = (acColor && /^#[0-9a-f]{6}$/i.test(acColor)) ? acColor : "#ff0044";
       const fillRgba = "rgba(" + parseInt(c.slice(1,3),16) + "," + parseInt(c.slice(3,5),16) + "," + parseInt(c.slice(5,7),16) + ",0.22)";
       const svgSize = 36;
@@ -267,21 +327,39 @@
           '<text x="18" y="26" text-anchor="middle" font-size="15" font-weight="bold" fill="' + c + '" font-family="sans-serif">!</text>' +
         '</svg>';
       const icon = L.divIcon({ html: svgHtml, className: "", iconSize: [svgSize, svgSize], iconAnchor: [svgSize/2, svgSize/2] });
-      L.marker([lat, lon], { icon: icon }).addTo(accidentLayer);
-      L.circle([lat, lon], {
+      const m = L.marker([lat, lon], { icon: icon }).addTo(accidentLayer);
+      const z = L.circle([lat, lon], {
         radius: radius_m || 450, color: c, weight: 1.5,
         dashArray: "8,6", opacity: 0.55, fillColor: c, fillOpacity: 0.06
       }).addTo(accidentZones);
+      knownAccidents[key] = { marker: m, zone: z };
+    }
+
+    function removeAccidentByKey(key) {
+      const entry = knownAccidents[key];
+      if (entry) {
+        accidentLayer.removeLayer(entry.marker);
+        accidentZones.removeLayer(entry.zone);
+        delete knownAccidents[key];
+      }
     }
 
     function syncAccidents(accList) {
-      accList.forEach(function (a) { addAccident(a.lat, a.lon, a.radius_m, a.color); });
+      // Build the authoritative key set from server
+      const newKeys = new Set();
+      accList.forEach(function(a) {
+        const key = parseFloat(a.lat).toFixed(5) + "," + parseFloat(a.lon).toFixed(5);
+        newKeys.add(key);
+        if (!knownAccidents[key]) addAccident(a.lat, a.lon, a.radius_m, a.color);
+      });
+      // Remove accidents no longer on the server
+      Object.keys(knownAccidents).forEach(function(key) {
+        if (!newKeys.has(key)) removeAccidentByKey(key);
+      });
     }
 
     function clearAccidents() {
-      accidentLayer.clearLayers();
-      accidentZones.clearLayers();
-      Object.keys(knownAccidents).forEach(function (k) { delete knownAccidents[k]; });
+      Object.keys(knownAccidents).forEach(removeAccidentByKey);
     }
 
     // ── Vehicle marker ──
@@ -337,6 +415,28 @@
       if (pendingPin) { map.removeLayer(pendingPin); pendingPin = null; }
     });
 
+    // ── Name-confirm sheet buttons (person type) ──
+    function _applyName(name) {
+      document.getElementById("name-sheet").classList.remove("open");
+      document.getElementById("name-label").textContent = name;
+      document.getElementById("name-bar").classList.add("show");
+    }
+    document.getElementById("btn-name-keep").addEventListener("click", function () {
+      _applyName(document.getElementById("name-label").textContent);
+    });
+    document.getElementById("btn-name-ok").addEventListener("click", function () {
+      const inp = document.getElementById("name-input").value.trim();
+      if (inp) {
+        document.getElementById("name-label").textContent = inp;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ action: "set_name", name: inp }));
+        }
+        _applyName(inp);
+      } else {
+        _applyName(document.getElementById("name-label").textContent);
+      }
+    });
+
     document.getElementById("btn-confirm").addEventListener("click", function () {
       document.getElementById("confirm-sheet").classList.remove("open");
       if (pendingPin) { map.removeLayer(pendingPin); pendingPin = null; }
@@ -348,11 +448,12 @@
           radius_m: 300,
           severity: "medium",
         }));
-        // Show "accident live" indicator
+        // Show "rerouting in progress" indicator until accident_update arrives
         const ind = document.getElementById("acc-indicator");
         ind.classList.add("show");
-        document.getElementById("acc-indicator-text").textContent = "Your accident is live";
-        setTimeout(function () { ind.classList.remove("show"); }, 6000);
+        document.getElementById("acc-indicator-text").textContent = "Accident placed — rerouting…";
+        document.getElementById("acc-pulse-dot").style.background = color;
+        setTimeout(function () { ind.classList.remove("show"); }, 12000);
       }
       pendingLatLon = null;
     });
@@ -365,9 +466,18 @@
                     "?color=" + encodeURIComponent(color);
       ws = new WebSocket(url);
 
-      ws.onopen = function () { setStatus("ok"); };
+      ws.onopen = function () {
+        setStatus("ok");
+        if (ws._heartbeatTimer) clearInterval(ws._heartbeatTimer);
+        ws._heartbeatTimer = setInterval(function () {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: "heartbeat" }));
+          }
+        }, 30000);
+      };
       ws.onclose = function () {
         setStatus("error");
+        if (ws._heartbeatTimer) { clearInterval(ws._heartbeatTimer); ws._heartbeatTimer = null; }
         setTimeout(connect, 2000);
       };
       ws.onerror = function () { setStatus("error"); };
@@ -383,6 +493,24 @@
       if (msg.type === "init") {
         setStatus("ok");
         if (msg.accidents) syncAccidents(msg.accidents);
+        if (msg.name) {
+          document.getElementById("name-label").textContent = msg.name;
+          document.getElementById("name-sub").textContent = VTYPE.replace(/_/g," ");
+          const dot = document.getElementById("name-dot");
+          dot.style.background = color; dot.style.boxShadow = "0 0 6px " + color;
+          // For persons: show name-confirm sheet first
+          if (VTYPE === "person") {
+            const inp = document.getElementById("name-input");
+            inp.value = msg.name;
+            inp.style.borderColor = color;
+            document.getElementById("btn-name-ok").style.background = color;
+            document.getElementById("name-sheet-sub").textContent =
+              '\u201c' + msg.name + '\u201d is your assigned name. Keep it or enter your own below.';
+            document.getElementById("name-sheet").classList.add("open");
+          } else {
+            document.getElementById("name-bar").classList.add("show");
+          }
+        }
       } else if (msg.type === "update") {
         if (msg.lat !== undefined && msg.lon !== undefined) {
           updateVehicle(msg.lat, msg.lon, msg.speed, msg.heading, msg.rerouted);
@@ -394,9 +522,19 @@
         if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
       } else if (msg.type === "accident_created") {
         addAccident(msg.lat, msg.lon, 300, msg.color);
+      } else if (msg.type === "accident_update") {
+        // Final rerouted count arrives after background work completes
+        const n = msg.rerouted_vehicles || 0;
+        const ind2 = document.getElementById("acc-indicator");
+        document.getElementById("acc-indicator-text").textContent =
+          n > 0 ? n + " vehicles rerouted" : "Accident live (no reroutes)";
+        document.getElementById("acc-pulse-dot").style.background = color;
+        ind2.classList.add("show");
+        setTimeout(function () { ind2.classList.remove("show"); }, 5000);
       } else if (msg.type === "accident_removed") {
-        // Full clear + re-sync (simplest approach)
-        clearAccidents();
+        // Server sends remaining list — use it to reconcile rather than blind clear
+        const rem = (msg.remaining && Array.isArray(msg.remaining)) ? msg.remaining : [];
+        syncAccidents(rem);
       } else if (msg.type === "accidents_cleared") {
         clearAccidents();
       } else if (msg.type === "error") {
