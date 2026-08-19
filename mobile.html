@@ -354,8 +354,25 @@
     // Layers
     const accidentLayer = L.layerGroup().addTo(map);
     const accidentZones = L.layerGroup().addTo(map);
+    const routeLayer    = L.layerGroup().addTo(map);
     let vehicleMarker   = null;
     let lastLat = null, lastLon = null;
+
+    // ── Route lines: original planned path + active reroute for THIS vehicle ──
+    function drawRoute(route) {
+      routeLayer.clearLayers();
+      if (!route) return;
+      if (route.original && route.original.length > 1) {
+        L.polyline(route.original, {
+          color: "#5b8def", weight: 3, opacity: 0.55, lineJoin: "round"
+        }).addTo(routeLayer);
+      }
+      if (route.reroute && route.reroute.length > 1) {
+        L.polyline(route.reroute, {
+          color: "#ff8c00", weight: 4, opacity: 0.95, dashArray: "8,6", lineJoin: "round"
+        }).addTo(routeLayer);
+      }
+    }
 
     // ── Status dot ──
     const statusDot = document.getElementById("status-dot");
@@ -654,6 +671,7 @@
         if (msg.lat !== undefined && msg.lon !== undefined) {
           updateVehicle(msg.lat, msg.lon, msg.speed, msg.heading, msg.rerouted);
         }
+        if (msg.route) drawRoute(msg.route);
         if (msg.accidents) syncAccidents(msg.accidents);
         renderCongestion(msg.congestion);
         renderEv(msg.ev);
@@ -661,6 +679,7 @@
         // New vehicle assigned — reset last position so map re-centers
         lastLat = null; lastLon = null;
         if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
+        routeLayer.clearLayers();
         document.getElementById("cong-bar").classList.remove("show");
         document.getElementById("ev-bar").classList.remove("show");
         // Update the displayed model to match the new vehicle (keeps the shown
