@@ -192,6 +192,54 @@
     font-size: 15px; font-weight: 600; color: #ccc;
   }
 
+  /* ── Ask AI ── */
+  #ai-fab {
+    position: fixed; top: 14px; right: 12px; z-index: 700;
+    width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+    background: rgba(124,131,253,0.95); color: #fff; font-size: 20px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  }
+  #ai-fab:active { opacity: 0.8; }
+  #ai-sheet {
+    position: fixed; bottom: -110%; left: 0; right: 0; z-index: 950;
+    background: rgba(14,14,30,0.98); backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(255,255,255,0.12); border-radius: 20px 20px 0 0;
+    padding: 16px 18px 26px; max-height: 82vh; display: flex; flex-direction: column;
+    transition: bottom 0.3s cubic-bezier(0.25,0.8,0.25,1);
+  }
+  #ai-sheet.open { bottom: 0; }
+  .ai-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .ai-title { font-size: 15px; font-weight: 700; color: #fff; }
+  .ai-x { background: none; border: none; color: #888; font-size: 17px; cursor: pointer; }
+  .ai-scope { display: flex; gap: 8px; margin-bottom: 12px; }
+  .ai-scope-btn {
+    flex: 1; padding: 9px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600;
+    border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #bbb;
+  }
+  .ai-scope-btn.active { background: rgba(124,131,253,0.92); color: #fff; border-color: transparent; }
+  .ai-output {
+    background: rgba(255,255,255,0.05); border-radius: 12px; padding: 12px 14px;
+    font-size: 13.5px; line-height: 1.5; color: #e8e8e8; min-height: 58px; max-height: 38vh;
+    overflow-y: auto; white-space: pre-wrap; margin-bottom: 12px;
+  }
+  .ai-input-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  #ai-input {
+    flex: 1; padding: 11px 14px; border-radius: 12px; -webkit-appearance: none;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+    color: #fff; font-size: 15px; outline: none;
+  }
+  #ai-input:focus { border-color: rgba(124,131,253,0.7); }
+  .ai-send {
+    width: 48px; border-radius: 12px; border: none; cursor: pointer;
+    background: rgba(124,131,253,0.92); color: #fff; font-size: 16px; font-weight: 700;
+  }
+  .ai-send:disabled { opacity: 0.5; }
+  .ai-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ai-chip {
+    padding: 7px 12px; border-radius: 14px; cursor: pointer; font-size: 12px;
+    border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #ccc;
+  }
+
   /* ── "Accident live" pulse indicator ── */
   #acc-indicator {
     position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
@@ -294,6 +342,25 @@
     <button class="btn-name-ok" id="btn-name-ok">Use this name</button>
     <button class="btn-name-keep" id="btn-name-keep">Keep assigned</button>
   </div>
+</div>
+
+<!-- Ask AI floating button + sheet -->
+<button id="ai-fab" title="Ask AI">🤖</button>
+<div id="ai-sheet">
+  <div class="ai-head">
+    <span class="ai-title">🤖 Ask AI</span>
+    <button id="ai-close" class="ai-x">✕</button>
+  </div>
+  <div class="ai-scope">
+    <button class="ai-scope-btn active" id="ai-scope-vehicle">This vehicle</button>
+    <button class="ai-scope-btn" id="ai-scope-global">Whole city</button>
+  </div>
+  <div id="ai-output" class="ai-output">Ask about your vehicle or the city traffic.</div>
+  <div class="ai-input-row">
+    <input id="ai-input" type="text" placeholder="Ask a question…" maxlength="400">
+    <button id="ai-send" class="ai-send">➤</button>
+  </div>
+  <div class="ai-chips" id="ai-chips"></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
@@ -608,6 +675,67 @@
       pendingLatLon = null;
     });
 
+    // ── Ask AI (vehicle-specific or city-wide) ──
+    (function initAskAI() {
+      const fab    = document.getElementById("ai-fab");
+      const sheet  = document.getElementById("ai-sheet");
+      const closeB = document.getElementById("ai-close");
+      const out    = document.getElementById("ai-output");
+      const input  = document.getElementById("ai-input");
+      const sendB  = document.getElementById("ai-send");
+      const chipsEl= document.getElementById("ai-chips");
+      const scopeV = document.getElementById("ai-scope-vehicle");
+      const scopeG = document.getElementById("ai-scope-global");
+      let scope = "vehicle";
+      let busy = false;
+      const CHIPS = {
+        vehicle: ["Where is it going?", "How is it moving?", "Any congestion nearby?"],
+        global:  ["City traffic overview", "Worst congestion right now?", "Any incidents?"],
+      };
+      function renderChips() {
+        chipsEl.innerHTML = "";
+        CHIPS[scope].forEach(function (q) {
+          const c = document.createElement("button");
+          c.className = "ai-chip"; c.textContent = q;
+          c.addEventListener("click", function () { input.value = q; ask(); });
+          chipsEl.appendChild(c);
+        });
+      }
+      function setScope(s) {
+        scope = s;
+        scopeV.classList.toggle("active", s === "vehicle");
+        scopeG.classList.toggle("active", s === "global");
+        renderChips();
+      }
+      function ask() {
+        if (busy) return;
+        const q = input.value.trim();
+        if (!(ws && ws.readyState === WebSocket.OPEN)) {
+          out.textContent = "Not connected — please wait…"; return;
+        }
+        busy = true; sendB.disabled = true;
+        out.textContent = "Thinking…";
+        ws.send(JSON.stringify({ action: "ask_ai", scope: scope, question: q }));
+      }
+      scopeV.addEventListener("click", function () { setScope("vehicle"); });
+      scopeG.addEventListener("click", function () { setScope("global"); });
+      sendB.addEventListener("click", ask);
+      input.addEventListener("keydown", function (e) { if (e.key === "Enter") ask(); });
+      fab.addEventListener("click", function () {
+        sheet.classList.add("open");
+        setTimeout(function () { input.focus(); }, 200);
+      });
+      closeB.addEventListener("click", function () { sheet.classList.remove("open"); });
+      window.__mobAI = {
+        onAnswer: function (msg) {
+          busy = false; sendB.disabled = false;
+          out.textContent = msg.ok ? (msg.answer || "(no answer)")
+                                   : (msg.error || "AI is unavailable right now.");
+        }
+      };
+      setScope("vehicle");
+    })();
+
     // ── WebSocket ──
     let ws;
     function connect() {
@@ -675,6 +803,8 @@
         if (msg.accidents) syncAccidents(msg.accidents);
         renderCongestion(msg.congestion);
         renderEv(msg.ev);
+      } else if (msg.type === "ai_answer") {
+        if (window.__mobAI) window.__mobAI.onAnswer(msg);
       } else if (msg.type === "vehicle_switched") {
         // New vehicle assigned — reset last position so map re-centers
         lastLat = null; lastLon = null;
