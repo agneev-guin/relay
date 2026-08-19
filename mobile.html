@@ -79,14 +79,50 @@
   }
   #status-dot.connected { background: #2ecc71; }
   #status-dot.error     { background: #e74c3c; }
-  /* —— Name badge —— shown above info-bar at the bottom */
+
+  /* —— Stacked info bars above the bottom info-bar —— */
+  #extras {
+    position: fixed; left: 0; right: 0; bottom: 58px; z-index: 510;
+    display: flex; flex-direction: column;
+    pointer-events: none;
+  }
+  .ex-bar {
+    display: none; align-items: center; gap: 9px;
+    padding: 8px 16px; font-size: 12.5px; line-height: 1.25;
+    background: rgba(10,10,25,0.9); backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    pointer-events: auto;
+  }
+  .ex-bar.show { display: flex; }
+  .ex-ico { font-size: 15px; flex-shrink: 0; }
+  .ex-txt { flex: 1; min-width: 0; color: #e8e8e8; }
+  .ex-txt b { color: #fff; }
+  .ex-sub { color: #9a9aa8; font-size: 11px; }
+  #cong-bar { border-left: 3px solid #f1c40f; }
+  #ev-bar { border-left: 3px solid #2ecc71; }
+  .ev-batt {
+    position: relative; width: 28px; height: 14px; flex-shrink: 0;
+    border: 1.5px solid rgba(255,255,255,0.75); border-radius: 3px;
+  }
+  .ev-batt::after {
+    content: ''; position: absolute; right: -4px; top: 3.5px;
+    width: 2.5px; height: 5px; background: rgba(255,255,255,0.75);
+    border-radius: 0 1px 1px 0;
+  }
+  #ev-fill {
+    position: absolute; top: 1px; left: 1px; bottom: 1px; width: 0%;
+    border-radius: 1.5px; background: #2ecc71;
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+  #ev-soc { font-weight: 700; color: #fff; font-size: 12.5px; flex-shrink: 0; min-width: 34px; }
+
+  /* —— Name badge —— */
   #name-bar {
-    position: fixed; bottom: 62px; left: 0; right: 0; z-index: 510;
+    display: none; align-items: center; justify-content: center;
+    gap: 8px; padding: 6px 16px; font-size: 13px;
     background: rgba(10,10,25,0.82); backdrop-filter: blur(10px);
     border-top: 1px solid rgba(255,255,255,0.08);
-    display: none; align-items: center; justify-content: center;
-    gap: 8px; padding: 6px 16px;
-    font-size: 13px;
+    pointer-events: auto;
   }
   #name-bar.show { display: flex; }
   #name-dot { width:10px;height:10px;border-radius:50%;flex-shrink:0; }
@@ -196,11 +232,26 @@
   <button class="go-btn" id="go-btn" disabled>Connect &rarr;</button>
 </div>
 
-<!-- Name bar — shown once server sends init with name -->
-<div id="name-bar">
-  <div id="name-dot"></div>
-  <span id="name-label"></span>
-  <span id="name-sub"></span>
+<!-- Stacked info bars (congestion + EV + name) above the bottom info-bar -->
+<div id="extras">
+  <!-- Congestion near you -->
+  <div id="cong-bar" class="ex-bar">
+    <span class="ex-ico" id="cong-ico">⚠️</span>
+    <span class="ex-txt" id="cong-txt"></span>
+  </div>
+  <!-- EV battery / charging -->
+  <div id="ev-bar" class="ex-bar">
+    <span class="ex-ico">⚡</span>
+    <span class="ev-batt"><span id="ev-fill"></span></span>
+    <span id="ev-soc">—</span>
+    <span class="ex-txt" id="ev-txt"></span>
+  </div>
+  <!-- Name bar — shown once server sends init with name -->
+  <div id="name-bar">
+    <div id="name-dot"></div>
+    <span id="name-label"></span>
+    <span id="name-sub"></span>
+  </div>
 </div>
 
 <!-- Map -->
@@ -368,23 +419,98 @@
       return L.divIcon({ html: html, className: "", iconSize: [sz, sz], iconAnchor: [sz/2, sz/2] });
     }
 
+    // Client-side interpolation state
+    var _animFrame = null;
+
     function updateVehicle(lat, lon, speed, heading, rerouted) {
-      if (vehicleMarker) {
-        vehicleMarker.setLatLng([lat, lon]);
-      } else {
-        vehicleMarker = L.marker([lat, lon], { icon: makeVehicleIcon(18, color), zIndexOffset: 500 }).addTo(map);
-      }
-      const speedEl   = document.getElementById("speed-val");
-      const rerEl     = document.getElementById("rerouted-badge");
+      const speedEl = document.getElementById("speed-val");
+      const rerEl   = document.getElementById("rerouted-badge");
       speedEl.textContent = (speed !== undefined ? speed.toFixed(1) : "—") + " km/h";
       rerEl.classList.toggle("show", !!rerouted);
-      // Follow the vehicle
+
       if (lastLat === null) {
+        // First fix — place marker immediately, no animation needed
+        if (!vehicleMarker) {
+          vehicleMarker = L.marker([lat, lon], { icon: makeVehicleIcon(18, color), zIndexOffset: 500 }).addTo(map);
+        } else {
+          vehicleMarker.setLatLng([lat, lon]);
+        }
         map.setView([lat, lon], 15);
-      } else {
-        map.panTo([lat, lon], { animate: true, duration: 0.5 });
+        lastLat = lat; lastLon = lon;
+        return;
       }
+
+      // Smoothly animate the marker between previous and new position
+      // using requestAnimationFrame so movement is fluid at ~60 fps instead
+      // of jumping once per server frame (100 ms).
+      var fromLat = lastLat, fromLon = lastLon;
+      var startTs = performance.now();
+      var dur = 110; // ms — slightly longer than server frame interval so frames overlap
+      if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
+      function _step(ts) {
+        var p = Math.min(1.0, (ts - startTs) / dur);
+        // Ease-out: decelerate towards the target for a natural feel
+        var pe = 1 - (1 - p) * (1 - p);
+        var iLat = fromLat + (lat - fromLat) * pe;
+        var iLon = fromLon + (lon - fromLon) * pe;
+        if (!vehicleMarker) {
+          vehicleMarker = L.marker([iLat, iLon], { icon: makeVehicleIcon(18, color), zIndexOffset: 500 }).addTo(map);
+        } else {
+          vehicleMarker.setLatLng([iLat, iLon]);
+        }
+        if (p < 1.0) {
+          _animFrame = requestAnimationFrame(_step);
+        } else {
+          _animFrame = null;
+        }
+      }
+      _animFrame = requestAnimationFrame(_step);
+
+      // Follow the vehicle — short snappy pan so the map keeps up
+      map.panTo([lat, lon], { animate: true, duration: 0.15 });
       lastLat = lat; lastLon = lon;
+    }
+
+    // ── Congestion-near-you + EV battery bars ──
+    const SEV_COLORS = { moderate: "#f1c40f", heavy: "#e67e22", severe: "#e74c3c" };
+    function renderCongestion(c) {
+      const bar = document.getElementById("cong-bar");
+      if (!c || !c.area) { bar.classList.remove("show"); return; }
+      const col = SEV_COLORS[c.severity] || "#f1c40f";
+      const dist = (c.distance_m == null) ? "" :
+        (c.distance_m < 1000 ? Math.round(c.distance_m) + " m"
+                             : (c.distance_m / 1000).toFixed(1) + " km");
+      const spd = (c.avg_kmh != null) ? (" \u00b7 " + c.avg_kmh + " km/h") : "";
+      const sev = (c.severity || "").charAt(0).toUpperCase() + (c.severity || "").slice(1);
+      bar.style.borderLeftColor = col;
+      document.getElementById("cong-ico").textContent =
+        (c.severity === "severe") ? "\uD83D\uDED1" : "\u26A0\uFE0F";
+      document.getElementById("cong-txt").innerHTML =
+        "<b>" + sev + " congestion</b> in " + c.area +
+        "<span class='ex-sub'> \u00b7 " + dist + " " + (c.direction || "") + spd + "</span>";
+      bar.classList.add("show");
+    }
+
+    const EV_COLORS = { ok: "#2ecc71", low: "#f1c40f", critical: "#e74c3c" };
+    function renderEv(ev) {
+      const bar = document.getElementById("ev-bar");
+      if (!ev || !ev.is_ev) { bar.classList.remove("show"); return; }
+      const col = EV_COLORS[ev.status] || "#2ecc71";
+      const fill = document.getElementById("ev-fill");
+      fill.style.width = Math.max(0, Math.min(100, ev.soc_pct)) + "%";
+      fill.style.background = col;
+      const socEl = document.getElementById("ev-soc");
+      socEl.textContent = ev.soc_pct + "%";
+      socEl.style.color = col;
+      bar.style.borderLeftColor = col;
+      let txt = "Range <b>" + ev.range_km + " km</b>";
+      if (ev.charge_to_80_min > 0) {
+        txt += "<span class='ex-sub'> \u00b7 +" + ev.charge_to_80_kwh +
+               " kWh, ~" + ev.charge_to_80_min + " min to 80%</span>";
+      }
+      txt += "<br><span class='ex-sub'>" + (ev.recommendation || "") + "</span>";
+      document.getElementById("ev-txt").innerHTML = txt;
+      bar.classList.add("show");
     }
 
     // ── Pin marker for accident placement ──
@@ -440,14 +566,21 @@
     document.getElementById("btn-confirm").addEventListener("click", function () {
       document.getElementById("confirm-sheet").classList.remove("open");
       if (pendingPin) { map.removeLayer(pendingPin); pendingPin = null; }
-      if (pendingLatLon && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          action:   "create_accident",
-          lat:      pendingLatLon.lat,
-          lon:      pendingLatLon.lng,
-          radius_m: 300,
-          severity: "medium",
-        }));
+      if (pendingLatLon) {
+        // Optimistic: show the accident marker immediately without waiting for
+        // the relay round-trip. The server echo (accident_created) will be a
+        // no-op because addAccident() guards against duplicate keys.
+        addAccident(pendingLatLon.lat, pendingLatLon.lng, 300, color);
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            action:   "create_accident",
+            lat:      pendingLatLon.lat,
+            lon:      pendingLatLon.lng,
+            radius_m: 300,
+            severity: "medium",
+          }));
+        }
         // Show "rerouting in progress" indicator until accident_update arrives
         const ind = document.getElementById("acc-indicator");
         ind.classList.add("show");
@@ -495,7 +628,8 @@
         if (msg.accidents) syncAccidents(msg.accidents);
         if (msg.name) {
           document.getElementById("name-label").textContent = msg.name;
-          document.getElementById("name-sub").textContent = VTYPE.replace(/_/g," ");
+          document.getElementById("name-sub").textContent =
+            VTYPE === "ev" ? "electric vehicle" : VTYPE.replace(/_/g," ");
           const dot = document.getElementById("name-dot");
           dot.style.background = color; dot.style.boxShadow = "0 0 6px " + color;
           // For persons: show name-confirm sheet first
@@ -512,14 +646,29 @@
           }
         }
       } else if (msg.type === "update") {
+        if (VTYPE === "ev" && msg.real_vtype) {
+          const rt = msg.real_vtype.replace(/_/g," ");
+          document.getElementById("vtype-label").textContent = "EV \u00b7 " + rt;
+          document.getElementById("name-sub").textContent = rt + " \u00b7 electric";
+        }
         if (msg.lat !== undefined && msg.lon !== undefined) {
           updateVehicle(msg.lat, msg.lon, msg.speed, msg.heading, msg.rerouted);
         }
         if (msg.accidents) syncAccidents(msg.accidents);
+        renderCongestion(msg.congestion);
+        renderEv(msg.ev);
       } else if (msg.type === "vehicle_switched") {
         // New vehicle assigned — reset last position so map re-centers
         lastLat = null; lastLon = null;
         if (vehicleMarker) { map.removeLayer(vehicleMarker); vehicleMarker = null; }
+        document.getElementById("cong-bar").classList.remove("show");
+        document.getElementById("ev-bar").classList.remove("show");
+        // Update the displayed model to match the new vehicle (keeps the shown
+        // model consistent with its EV status).
+        if (msg.name && VTYPE !== "person") {
+          document.getElementById("name-label").textContent = msg.name;
+          document.getElementById("name-bar").classList.add("show");
+        }
       } else if (msg.type === "accident_created") {
         addAccident(msg.lat, msg.lon, 300, msg.color);
       } else if (msg.type === "accident_update") {

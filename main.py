@@ -24,7 +24,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 SECRET = os.environ.get("RELAY_SECRET", "demo-secret-change-me")
 MOBILE_HTML_PATH = Path(__file__).parent / "mobile.html"
-_VALID_VTYPES = {"2wheeler", "car", "bus", "truck", "person"}
+# "ev" is a synthetic pseudo-type routed to the simulation, which tracks any
+# electric vehicle regardless of its real body type.
+_VALID_VTYPES = {"2wheeler", "car", "bus", "truck", "person", "ev"}
 
 app = FastAPI(title="Mobile Relay")
 
