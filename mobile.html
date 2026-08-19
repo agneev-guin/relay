@@ -194,7 +194,7 @@
 
   /* ── Ask AI ── */
   #ai-fab {
-    position: fixed; top: 14px; right: 12px; z-index: 700;
+    position: fixed; top: 66px; right: 12px; z-index: 700;
     width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
     background: rgba(124,131,253,0.95); color: #fff; font-size: 20px;
     box-shadow: 0 4px 14px rgba(0,0,0,0.45);
@@ -287,9 +287,9 @@
     <span class="ex-ico" id="cong-ico">⚠️</span>
     <span class="ex-txt" id="cong-txt"></span>
   </div>
-  <!-- EV battery / charging -->
+  <!-- Energy: EV battery or fuel level -->
   <div id="ev-bar" class="ex-bar">
-    <span class="ex-ico">⚡</span>
+    <span class="ex-ico" id="ev-ico">⚡</span>
     <span class="ev-batt"><span id="ev-fill"></span></span>
     <span id="ev-soc">—</span>
     <span class="ex-txt" id="ev-txt"></span>
@@ -576,23 +576,43 @@
     }
 
     const EV_COLORS = { ok: "#2ecc71", low: "#f1c40f", critical: "#e74c3c" };
-    function renderEv(ev) {
+    function renderEnergy(en) {
       const bar = document.getElementById("ev-bar");
-      if (!ev || !ev.is_ev) { bar.classList.remove("show"); return; }
-      const col = EV_COLORS[ev.status] || "#2ecc71";
+      if (!en) { bar.classList.remove("show"); return; }
+      const isBatt = en.kind === "battery" || en.is_ev;
+      const col = EV_COLORS[en.status] || "#2ecc71";
+      const pct = Math.max(0, Math.min(100, isBatt ? en.soc_pct : en.level_pct));
       const fill = document.getElementById("ev-fill");
-      fill.style.width = Math.max(0, Math.min(100, ev.soc_pct)) + "%";
+      fill.style.width = pct + "%";
       fill.style.background = col;
       const socEl = document.getElementById("ev-soc");
-      socEl.textContent = ev.soc_pct + "%";
+      socEl.textContent = pct + "%";
       socEl.style.color = col;
       bar.style.borderLeftColor = col;
-      let txt = "Range <b>" + ev.range_km + " km</b>";
-      if (ev.charge_to_80_min > 0) {
-        txt += "<span class='ex-sub'> \u00b7 +" + ev.charge_to_80_kwh +
-               " kWh, ~" + ev.charge_to_80_min + " min to 80%</span>";
+      document.getElementById("ev-ico").textContent = isBatt ? "⚡" : "⛽";
+      let txt;
+      if (isBatt) {
+        txt = "Range <b>" + en.range_km + " km</b>";
+        if (en.charge_to_80_min > 0) {
+          txt += "<span class='ex-sub'> \u00b7 +" + en.charge_to_80_kwh +
+                 " kWh, ~" + en.charge_to_80_min + " min to 80%</span>";
+        }
+      } else {
+        txt = (en.fuel_type || "Fuel") + " \u00b7 Range <b>" + en.range_km + " km</b>";
+        if (en.refuel_to_full_liters > 0) {
+          txt += "<span class='ex-sub'> \u00b7 " + en.refuel_to_full_liters + " L to full</span>";
+        }
       }
-      txt += "<br><span class='ex-sub'>" + (ev.recommendation || "") + "</span>";
+      const stn = en.nearest_station;
+      if (stn) {
+        const d = stn.distance_m < 1000 ? Math.round(stn.distance_m) + " m"
+                                        : (stn.distance_m / 1000).toFixed(1) + " km";
+        const label = isBatt ? "Charge at " : "Fuel at ";
+        txt += "<br><span class='ex-sub'>" + label + stn.name +
+               " \u00b7 " + d + " " + (stn.direction || "") + "</span>";
+      } else if (en.recommendation) {
+        txt += "<br><span class='ex-sub'>" + en.recommendation + "</span>";
+      }
       document.getElementById("ev-txt").innerHTML = txt;
       bar.classList.add("show");
     }
@@ -802,7 +822,7 @@
         if (msg.route) drawRoute(msg.route);
         if (msg.accidents) syncAccidents(msg.accidents);
         renderCongestion(msg.congestion);
-        renderEv(msg.ev);
+        renderEnergy(msg.energy);
       } else if (msg.type === "ai_answer") {
         if (window.__mobAI) window.__mobAI.onAnswer(msg);
       } else if (msg.type === "vehicle_switched") {
