@@ -708,8 +708,12 @@
       const scopeG = document.getElementById("ai-scope-global");
       let scope = "vehicle";
       let busy = false;
+      const _isPerson = (VTYPE === "person");
+      if (_isPerson) scopeV.textContent = "This person";
       const CHIPS = {
-        vehicle: ["Where is it going?", "How is it moving?", "Any congestion nearby?"],
+        vehicle: _isPerson
+          ? ["Where are they going?", "How are they moving?", "Any congestion nearby?"]
+          : ["Where is it going?", "How is it moving?", "Any congestion nearby?"],
         global:  ["City traffic overview", "Worst congestion right now?", "Any incidents?"],
       };
       function renderChips() {
