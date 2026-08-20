@@ -10,6 +10,7 @@ Environment variables:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -35,6 +36,12 @@ app = FastAPI(title="Mobile Relay")
 _source_ws: WebSocket | None = None
 # client_id → WebSocket for each connected phone.
 _mobile_clients: dict[str, WebSocket] = {}
+# client_id → {"vtype", "color"} so we can re-announce phones to the source
+# whenever the simulation (re)connects.
+_mobile_meta: dict[str, dict] = {}
+# Seconds between app-level keepalive pings sent to the source. Must be well
+# below the simulation's 120s idle watchdog so the connection never churns.
+_KEEPALIVE_SECONDS = 30
 
 
 async def _to_source(msg: dict) -> None:
@@ -80,6 +87,17 @@ async def source_endpoint(ws: WebSocket, secret: str = ""):
     log.info("Local simulation connected (%d mobile clients already waiting)",
              len(_mobile_clients))
 
+    # Re-announce every phone that is already connected so the simulation
+    # rebuilds their sessions after any (re)connect. Without this, phones that
+    # were connected before the source reconnected would freeze forever.
+    for cid, meta in list(_mobile_meta.items()):
+        await _to_source({
+            "event": "new_client",
+            "client_id": cid,
+            "vtype": meta.get("vtype", "car"),
+            "color": meta.get("color", "#e74c3c"),
+        })
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -124,6 +142,7 @@ async def mobile_endpoint(ws: WebSocket, vehicle_type: str, color: str = "#e74c3
     client_id = str(uuid.uuid4())
     await ws.accept()
     _mobile_clients[client_id] = ws
+    _mobile_meta[client_id] = {"vtype": vehicle_type, "color": color}
     log.info("Mobile %s connected type=%s color=%s (%d total)",
              client_id[:8], vehicle_type, color, len(_mobile_clients))
 
@@ -152,9 +171,27 @@ async def mobile_endpoint(ws: WebSocket, vehicle_type: str, color: str = "#e74c3
         pass
     finally:
         _mobile_clients.pop(client_id, None)
+        _mobile_meta.pop(client_id, None)
         await _to_source({
             "event": "client_disconnected",
             "client_id": client_id,
         })
         log.info("Mobile %s disconnected (%d remaining)",
                  client_id[:8], len(_mobile_clients))
+
+
+# ── Keepalive ───────────────────────────────────────────────────────────
+def _register_keepalive() -> None:
+    async def _keepalive_loop():
+        while True:
+            await asyncio.sleep(_KEEPALIVE_SECONDS)
+            # A real message on the wire resets the simulation's idle watchdog,
+            # keeping the source connection stable so phones never get dropped.
+            await _to_source({"event": "ping"})
+
+    @app.on_event("startup")
+    async def _start_keepalive():
+        asyncio.ensure_future(_keepalive_loop())
+
+
+_register_keepalive()
